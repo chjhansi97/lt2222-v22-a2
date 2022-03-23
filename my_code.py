@@ -1,110 +1,115 @@
-from concurrent.futures import process
 import gzip
 import random
-from tracemalloc import stop
-import nltk
-import string
+import math
+from nltk.tokenize import WordPunctTokenizer
 from nltk.corpus import stopwords
+from nltk.util import ngrams
 import numpy as np
 import pandas as pd
-from nltk import ngrams
-from sklearn.model_selection import train_test_split
-from sklearn import svm
+import nltk
+nltk.download('stopwords')
+nltk.download('averaged_perceptron_tagger')
+from sklearn.svm import SVC
 from sklearn import metrics
-#nltk.download('stopwords')
+import string
 
-punc = '''!()-[]{;}:'"\,<>./?@#$%^&*_~'''
-sent_list = []
-def sample_lines(file_name,lines):
+def sample_lines(file_name, lines=100000):
     file = gzip.open(file_name,"rb")
     lines_list = list(file)
     sample_list = []
     for line in lines_list[:lines]:
-        sample_list.append(line)
+        sample_list.append(line.decode('utf8').strip())
     
     return random.sample(sample_list,lines)
 
 def process_sentences(sampled_lines):
+    sent_list = []
     for line in sampled_lines:
         final_list = [] # list of lists with each sentence as a list of words with tags
-        sentence_tokens = nltk.word_tokenize(str(line))
+        sentence_tokens = nltk.word_tokenize(line)
         word_tag = nltk.pos_tag(sentence_tokens)
         lower = [(word.lower(),tag) for word,tag in word_tag]
         for item in lower:
             if item[0] not in stopwords.words('english'):
-                if item[0] not in punc:
+                if item[0] not in string.punctuation:
                     final_list.append(item)
         sent_list.append(final_list)        
     return sent_list
 
-def create_samples(processed_sentences,limit):
+def create_samples(processed_sentences, limit=50000):
     five_gram_list = []
-    for sentence in processed_sentences[:limit]:
+    for sentence in processed_sentences:
         five_grams = list(ngrams(sentence,5))
-        if five_grams!= []:
-            five_gram_list.append(random.choice(five_grams))
-        
+        for gram in five_grams:
+            five_gram_list.append(gram)
+
+    random_five_gram = random.randint(0, (len(five_gram_list)-limit))
+    limit = five_gram_list[random_five_gram:random_five_gram+limit]
     #creating feature list
-    features = []
-    for gram in five_gram_list:
+    samples = []
+    for gram in limit:
         feat_1 = (gram[0][0][-2:]) + "_"+str(1)
         feat_2 = (gram[1][0][-2:]) + "_"+str(2)
-        feat_4 = (gram[3][0][-2:]) + "_"+str(4)
-        feat_5 = (gram[4][0][-2:]) + "_"+str(5)
+        feat_4 = (gram[2][0][-2:]) + "_"+str(3)
+        feat_5 = (gram[3][0][-2:]) + "_"+str(5)
         
         if gram[2][1] == 'VBN':
             verb_value =  1
         else:
             verb_value = 0
-        feature_tuple = ((feat_1,feat_2,feat_4,feat_5),verb_value)
-        features.append(feature_tuple)
+        sample = (feat_1,feat_2,feat_4,feat_5,verb_value)
+        samples.append(sample)
 
-    return features
-    
+    return samples
 
-def create_df(features):
-    #creating vectors
-    ending_list = []
-    create_df.verb_values_list = []
-    for sent_features in features:
-        for gram in sent_features[0]:
-            ending_list.append(gram)
-        create_df.verb_values_list.append(sent_features[1])    
+def create_df(samples):
+    columns = []
+    rows = []
+    for sample in samples:
+        features = sample[:4]
+        for feature in features:
+            if feature not in columns:
+                columns.append(feature)
+    columns.append('VBN')
     
-    #creating vectors
-    feature_vectors = []
-    for feature in features:
-        vector_list = []
-        for ending in ending_list:
-            if ending in feature[0]:
-                vector_list.append(1)
-            else:
-                vector_list.append(0)
-        feature_vectors.append(vector_list)
-    # print(np.array(feature_vectors))
-    df = pd.DataFrame(data = feature_vectors,columns=ending_list)
+    for sample in samples:
+        features = sample[:4]
+        verb = sample[4]
+        row_vector = []
+        for feature in columns:
+            if (feature != 'VBN') and (feature in features):
+                row_vector.append(1)
+            elif (feature != 'VBN') and (feature not in features):
+                row_vector.append(0)
+        row_vector.append(verb)
+        rows.append(row_vector)
+    df = pd.DataFrame(np.array(rows),columns=columns)
     return df
 
-def split_samples(df,test_percent):
-    X = df.reset_index(drop=True)
-    y = create_df.verb_values_list
-    train_test_samples = train_test_split(X,y, test_size = test_percent/100)
-    return(train_test_samples)
+def split_samples(df, test_percent=20):
+    X = df.iloc[:,0:len(df.columns)-2]
+    y = df.iloc[:,len(df.columns)-1]
+    percent = round(len(df) * (test_percent/100))
+    X_train, y_train, X_test, y_test = X[percent:], y[percent:], X[:percent], y[:percent]
+    
+    return(X_train, y_train, X_test, y_test)
 
-def train(X,y,kernel): 
+def train(X_train, y_train, kernel='linear'):
     if kernel == 'rbf':
-        clf = svm.SVC(kernel='rbf')
-    else: 
-        clf = svm.SVC(kernel='linear')
-    model = clf.fit(X,y)
+        clf = SVC(kernel='rbf')
+    elif kernel == 'linear': 
+        clf = SVC(kernel='linear')
+    else:
+        return
+    model = clf.fit(X_train, y_train)
     return model
 
 def eval_model(model, X_test, y_test):
     y_pred = model.predict(X_test)
-    print(y_pred)
     precision = metrics.precision_score(y_test, y_pred)
     recall = metrics.recall_score(y_test, y_pred)
+    f_measure = metrics.f1_score(y_test, y_pred)
     precision_score = "Precision:"+ str(precision)
     recall_score = "Recall:"+str(recall)
-    f_measure = "F-measure:" + str((2*precision*recall)/(precision+recall))
-    return precision_score, recall_score, f_measure
+    f_measure_score = "F-measure:" + str(f_measure)
+    print(model,"\n", precision_score, "\n",recall_score, "\n",f_measure_score)
